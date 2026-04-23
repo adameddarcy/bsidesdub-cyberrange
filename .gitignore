@@ -1,0 +1,9 @@
+# Docker
+*.env
+.env*
+
+# Certs
+config/nginx/certs/
+
+# OS
+.DS_Store

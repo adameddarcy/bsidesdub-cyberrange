@@ -1,0 +1,306 @@
+# =============================================================================
+# CYBER RANGE — Threat Modelling Workshop
+# Three-tier web app with intentional misconfigurations for STRIDE analysis
+# =============================================================================
+# Networks:
+#   dmz          → internet-facing services (proxy, juice shop)
+#   app_net      → application tier (app ↔ api ↔ db)
+#   internal_net → sensitive internal services (db, ldap, agent)
+#   monitoring   → logging stack (isolated)
+#
+# Intentional weaknesses are marked: # [VULN] — these are the threat surfaces
+# participants should discover and enumerate during the workshop.
+# =============================================================================
+
+name: cyber-range
+
+networks:
+  dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.1.0/24
+
+  app_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.2.0/24
+
+  internal_net:
+    driver: bridge
+    internal: true               # no external routing
+    ipam:
+      config:
+        - subnet: 10.10.3.0/24
+
+  monitoring:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.4.0/24
+
+
+# =============================================================================
+# TIER 1 — DMZ / External Zone
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Reverse Proxy (nginx)
+  # Entry point from the simulated internet. Routes to Juice Shop.
+  # [VULN] Server header not suppressed — reveals nginx version
+  # [VULN] No rate limiting on /rest/user/login → brute-force surface
+  # ---------------------------------------------------------------------------
+  proxy:
+    image: nginx:1.25-alpine
+    container_name: range-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx:/etc/nginx/conf.d:ro   # mounts dir→dir; nginx loads conf.d/*.conf
+    networks:
+      dmz:
+        ipv4_address: 10.10.1.10
+      monitoring:
+    depends_on:
+      - juiceshop
+    labels:
+      range.tier: "dmz"
+      range.role: "reverse-proxy"
+
+  # ---------------------------------------------------------------------------
+  # OWASP Juice Shop — deliberately vulnerable web app
+  # Primary threat modelling target. Surfaces OWASP Top 10.
+  # [VULN] SQLi on product search, XSS on feedback form, IDOR on basket API
+  # [VULN] JWT secret is hardcoded ('secret') — token forgery possible
+  # [VULN] Admin panel reachable at /#/administration with weak credential
+  # ---------------------------------------------------------------------------
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: range-juiceshop
+    environment:
+      - NODE_ENV=unsafe                   # disables some built-in protections
+    networks:
+      dmz:
+        ipv4_address: 10.10.1.20
+      app_net:
+        ipv4_address: 10.10.2.10
+    labels:
+      range.tier: "dmz"
+      range.role: "target-app"
+
+
+# =============================================================================
+# TIER 2 — Application Zone
+# =============================================================================
+
+  # ---------------------------------------------------------------------------
+  # Mock Internal API (httpbin)
+  # Simulates an internal microservice. Not internet-exposed — only reachable
+  # via app_net. Good surface for demonstrating SSRF from Juice Shop.
+  # [VULN] No authentication required on any endpoint
+  # [VULN] Reachable from DMZ via SSRF → internal network pivot
+  # ---------------------------------------------------------------------------
+  api:
+    image: kennethreitz/httpbin:latest
+    container_name: range-api
+    networks:
+      app_net:
+        ipv4_address: 10.10.2.20
+    labels:
+      range.tier: "app"
+      range.role: "internal-api"
+
+  # ---------------------------------------------------------------------------
+  # Mock Agent Service (simple Python Flask app)
+  # Represents an LLM-backed agent with tool access to the internal API.
+  # Relevant for threat modelling human oversight / approval workflows.
+  # [VULN] No approval gate — agent executes tool calls without confirmation
+  # [VULN] System prompt injectable via user-controlled input field
+  # [VULN] Tool output not sanitised before passing back to model context
+  # ---------------------------------------------------------------------------
+  agent:
+    image: python:3.12-slim
+    container_name: range-agent
+    working_dir: /app
+    volumes:
+      - ./config/agent:/app:ro
+    command: >
+      sh -c "pip install flask requests --quiet &&
+             python agent_server.py"
+    environment:
+      - INTERNAL_API_URL=http://10.10.2.20
+      - REQUIRE_APPROVAL=false            # [VULN] toggle to 'true' to demo control
+      - MAX_TOOL_CALLS=unlimited          # [VULN] no loop/recursion guard
+    networks:
+      app_net:
+        ipv4_address: 10.10.2.30
+      internal_net:
+        ipv4_address: 10.10.3.10
+    labels:
+      range.tier: "app"
+      range.role: "agentic-service"
+
+
+# =============================================================================
+# TIER 3 — Internal / Data Zone
+# =============================================================================
+
+  # ---------------------------------------------------------------------------
+  # MySQL Database
+  # Backend for Juice Shop. Also holds a mock "sensitive records" table.
+  # [VULN] Root password set to 'password' via environment variable
+  # [VULN] Juice Shop connects as root — no least-privilege DB user
+  # [VULN] General query log enabled — credentials appear in log output
+  # ---------------------------------------------------------------------------
+  db:
+    image: mysql:8.0
+    container_name: range-db
+    environment:
+      MYSQL_ROOT_PASSWORD: password        # [VULN] trivial credential
+      MYSQL_DATABASE: juiceshop
+      MYSQL_USER: juiceshop
+      MYSQL_PASSWORD: juiceshop
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./config/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: >
+      --general-log=1
+      --general-log-file=/var/lib/mysql/general.log
+    networks:
+      app_net:
+        ipv4_address: 10.10.2.40
+      internal_net:
+        ipv4_address: 10.10.3.20
+    labels:
+      range.tier: "internal"
+      range.role: "database"
+
+  # ---------------------------------------------------------------------------
+  # OpenLDAP — mock Active Directory / identity store
+  # Models a corporate directory service. Not exposed beyond internal_net.
+  # [VULN] Anonymous LDAP bind enabled — directory enumerable without creds
+  # [VULN] Weak admin password ('admin') — susceptible to password spray
+  # ---------------------------------------------------------------------------
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: range-ldap
+    environment:
+      LDAP_ORGANISATION: "RangeCorp"
+      LDAP_DOMAIN: "rangecorp.local"
+      LDAP_ADMIN_PASSWORD: admin           # [VULN] trivial credential
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: readonly
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+      - ./config/ldap/bootstrap.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom.ldif:ro
+    networks:
+      internal_net:
+        ipv4_address: 10.10.3.30
+    labels:
+      range.tier: "internal"
+      range.role: "identity-store"
+
+
+# =============================================================================
+# BASTION — Jump Host
+# Participants SSH in here. Has visibility across all network tiers.
+# Models a poorly-segmented bastion with overly broad network access.
+# [VULN] SSH password auth enabled (not key-only)
+# [VULN] Bastion has direct route to internal_net — no further hop required
+# =============================================================================
+
+  bastion:
+    image: linuxserver/openssh-server:latest
+    container_name: range-bastion
+    ports:
+      - "2222:2222"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Dublin
+      - PASSWORD_ACCESS=true              # [VULN] should be key-only
+      - USER_NAME=analyst
+      - USER_PASSWORD=analyst123          # [VULN] share with participants
+    networks:
+      dmz:
+        ipv4_address: 10.10.1.30
+      app_net:
+        ipv4_address: 10.10.2.50
+      internal_net:
+        ipv4_address: 10.10.3.40
+      monitoring:
+    labels:
+      range.tier: "bastion"
+      range.role: "jump-host"
+
+
+# =============================================================================
+# MONITORING STACK — Loki + Grafana
+# Participants can observe log artefacts of attacks they are modelling.
+# Accessible via browser on port 3000 (no auth — by design for workshop ease).
+# =============================================================================
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: range-loki
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./config/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      monitoring:
+    labels:
+      range.tier: "monitoring"
+      range.role: "log-aggregator"
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: range-promtail
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./config/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      monitoring:
+    labels:
+      range.tier: "monitoring"
+      range.role: "log-shipper"
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: range-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true    # workshop convenience — no login
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      monitoring:
+    depends_on:
+      - loki
+    labels:
+      range.tier: "monitoring"
+      range.role: "dashboard"
+
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+
+volumes:
+  db_data:
+  ldap_data:
+  ldap_config:
+  loki_data:
+  grafana_data:
