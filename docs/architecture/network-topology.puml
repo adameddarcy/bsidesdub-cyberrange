@@ -1,0 +1,78 @@
+@startuml Network_Topology
+!theme plain
+
+title Cyber Range Network Topology
+
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+cloud "Internet" as internet {
+    actor "Participant" as user
+}
+
+frame "VPS Host (UFW Firewall)" as vps {
+    
+    package "DMZ Network\n10.10.1.0/24" as dmz #LightBlue {
+        [Nginx Proxy\n10.10.1.10\n:80, :443] as proxy
+        [Juice Shop\n10.10.1.20\n:3000] as juice
+        [Bastion\n10.10.1.30\n:2222] as bastion_dmz
+    }
+    
+    package "App Network\n10.10.2.0/24" as app #LightGreen {
+        [Internal API\n10.10.2.20\n:80] as api
+        [Agent Service\n10.10.2.30\n:5000] as agent
+        [MySQL\n10.10.2.40\n:3306] as db_app
+        [Bastion\n10.10.2.50] as bastion_app
+        [Juice Shop\n10.10.2.10] as juice_app
+    }
+    
+    package "Internal Network\n10.10.3.0/24\n[internal: true]" as internal #LightCoral {
+        [Agent\n10.10.3.10] as agent_int
+        [MySQL\n10.10.3.20] as db_int
+        [OpenLDAP\n10.10.3.30\n:389] as ldap
+        [Bastion\n10.10.3.40] as bastion_int
+    }
+    
+    package "Monitoring Network\n10.10.4.0/24" as monitoring #LightYellow {
+        [Loki\n:3100] as loki
+        [Promtail] as promtail
+        [Grafana\n:3000] as grafana
+        [Proxy\n(logs)] as proxy_mon
+        [Bastion\n(logs)] as bastion_mon
+    }
+}
+
+user --> proxy : HTTP :80
+user --> bastion_dmz : SSH :2222
+user --> grafana : HTTP :3000
+
+proxy --> juice : proxy_pass
+juice .[#blue]. juice_app : same container
+
+bastion_dmz .[#red]. bastion_app : same container
+bastion_app .[#red]. bastion_int : same container
+bastion_int .[#red]. bastion_mon : same container
+
+agent .[#green]. agent_int : same container
+db_app .[#green]. db_int : same container
+
+juice_app --> api : SSRF target
+juice_app --> db_app : MySQL
+agent --> api : Tool calls
+agent_int --> ldap : LDAP queries
+
+promtail --> loki : Log push
+grafana --> loki : LogQL
+
+note bottom of bastion_int : [VULN] Bastion spans\nall 4 networks
+note bottom of internal : No external routing\n(Docker internal network)
+
+legend right
+  |= Color |= Meaning |
+  | <#LightBlue> | DMZ - Internet facing |
+  | <#LightGreen> | App - Application tier |
+  | <#LightCoral> | Internal - Sensitive data |
+  | <#LightYellow> | Monitoring - Observability |
+endlegend
+
+@enduml

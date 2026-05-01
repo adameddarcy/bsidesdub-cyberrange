@@ -1,0 +1,49 @@
+@startuml C4_Deployment
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Deployment Diagram - Cyber Range Infrastructure
+
+Deployment_Node(vps, "DigitalOcean VPS", "Ubuntu 22.04 LTS, 2 vCPU, 2GB RAM") {
+    Deployment_Node(docker, "Docker Engine", "Docker CE + Compose v2") {
+        
+        Deployment_Node(dmz_net, "DMZ Network", "Bridge: 10.10.1.0/24") {
+            Container(proxy, "range-proxy", "nginx:1.25-alpine", "10.10.1.10")
+            Container(juiceshop, "range-juiceshop", "juice-shop:latest", "10.10.1.20")
+            Container(bastion, "range-bastion", "openssh-server", "10.10.1.30")
+        }
+        
+        Deployment_Node(app_net, "App Network", "Bridge: 10.10.2.0/24") {
+            Container(api, "range-api", "httpbin:latest", "10.10.2.20")
+            Container(agent, "range-agent", "python:3.12-slim", "10.10.2.30")
+            Container(db, "range-db", "mysql:8.0", "10.10.2.40")
+        }
+        
+        Deployment_Node(internal_net, "Internal Network", "Bridge: 10.10.3.0/24 [internal: true]") {
+            Container(ldap, "range-ldap", "openldap:1.5.0", "10.10.3.30")
+        }
+        
+        Deployment_Node(mon_net, "Monitoring Network", "Bridge: 10.10.4.0/24") {
+            Container(loki, "range-loki", "loki:2.9.0", "")
+            Container(promtail, "range-promtail", "promtail:2.9.0", "")
+            Container(grafana, "range-grafana", "grafana:10.2.0", "")
+        }
+    }
+    
+    Deployment_Node(host_services, "Host Services") {
+        Container(ufw, "UFW Firewall", "Ports: 22, 80, 2222, 3000")
+        Container(fail2ban, "Fail2Ban", "Brute-force protection")
+    }
+}
+
+Deployment_Node(internet, "Internet") {
+    Container(participant_browser, "Participant Browser", "HTTP Client")
+    Container(participant_ssh, "Participant SSH", "SSH Client")
+}
+
+Rel(participant_browser, proxy, "HTTP :80", "")
+Rel(participant_browser, grafana, "HTTP :3000", "")
+Rel(participant_ssh, bastion, "SSH :2222", "")
+
+@enduml

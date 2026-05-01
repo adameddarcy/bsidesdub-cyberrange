@@ -1,0 +1,31 @@
+@startuml C4_Component_Agent
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Component Diagram - Agent Service (Agentic AI Threat Surface)
+
+Container_Boundary(agent, "Agent Service (range-agent)") {
+    Component(flask, "Flask Web Server", "Python Flask", "HTTP API server.\n[VULN] debug=True in production")
+    Component(invoke_endpoint, "/invoke Endpoint", "POST Handler", "Main entry point for agent invocation.\n[VULN] No authentication required")
+    Component(health_endpoint, "/health Endpoint", "GET Handler", "Health check endpoint")
+    Component(prompt_builder, "Prompt Builder", "Python Function", "Constructs system prompt.\n[VULN] User 'context' field appended without sanitisation")
+    Component(tool_dispatcher, "Tool Dispatcher", "Python Function", "Routes tool calls to handlers.\n[VULN] No approval gate, no call limit")
+    Component(fetch_tool, "fetch_internal_data", "Tool Function", "Makes GET requests to internal API.\n[VULN] Endpoint user-controlled - SSRF")
+    Component(write_tool, "write_record", "Tool Function", "POSTs records to internal API.\n[VULN] Table name not allowlisted")
+}
+
+Container_Ext(api, "Internal API", "httpbin - mock internal microservice")
+Container_Ext(caller, "Calling Service", "Any service on app_net or internal_net")
+
+Rel(caller, flask, "HTTP POST /invoke", "JSON")
+Rel(flask, invoke_endpoint, "Routes request")
+Rel(invoke_endpoint, prompt_builder, "Builds effective prompt")
+Rel(invoke_endpoint, tool_dispatcher, "Dispatches tool calls")
+Rel(tool_dispatcher, fetch_tool, "Calls")
+Rel(tool_dispatcher, write_tool, "Calls")
+Rel(fetch_tool, api, "HTTP GET", "User-controlled path")
+Rel(write_tool, api, "HTTP POST", "/post")
+Rel(flask, health_endpoint, "GET /health")
+
+@enduml

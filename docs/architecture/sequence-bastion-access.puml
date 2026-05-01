@@ -1,0 +1,71 @@
+@startuml Sequence_Bastion_Access
+!theme plain
+
+title Bastion Access & Network Enumeration
+
+actor "Workshop\nParticipant" as user
+participant "Fail2Ban" as f2b
+participant "UFW Firewall" as ufw
+participant "Bastion\n10.10.1.30" as bastion
+participant "Juice Shop\n10.10.1.20" as juice
+participant "Internal API\n10.10.2.20" as api
+participant "MySQL\n10.10.3.20" as db
+participant "OpenLDAP\n10.10.3.30" as ldap
+
+== SSH Login ==
+
+user -> ufw : SSH to vps-ip:2222
+activate ufw
+ufw -> f2b : Check rate limit
+activate f2b
+f2b --> ufw : Allow (< 10 attempts)
+deactivate f2b
+ufw -> bastion : Forward SSH
+activate bastion
+bastion --> user : Password prompt
+user -> bastion : analyst / analyst123
+note over bastion : [VULN] Password auth enabled\nShould be key-only
+bastion --> user : Shell access
+deactivate bastion
+deactivate ufw
+
+== Network Enumeration from Bastion ==
+
+user -> bastion : nmap -sn 10.10.1.0/24 10.10.2.0/24 10.10.3.0/24
+activate bastion
+note over bastion : [VULN] Bastion connected to ALL tiers\nShould be segmented
+bastion --> user : Discovered hosts:\n10.10.1.10 (proxy)\n10.10.1.20 (juice)\n10.10.2.20 (api)\n10.10.2.30 (agent)\n10.10.2.40 (db)\n10.10.3.20 (db internal)\n10.10.3.30 (ldap)
+deactivate bastion
+
+== Direct Internal Access ==
+
+user -> bastion : curl http://10.10.2.20/get
+activate bastion
+bastion -> api : HTTP GET /get
+activate api
+api --> bastion : {"origin": "10.10.2.50", ...}
+deactivate api
+bastion --> user : Internal API response
+deactivate bastion
+
+user -> bastion : mysql -h 10.10.3.20 -u root -p'password'
+activate bastion
+bastion -> db : MySQL connection
+activate db
+note over db : [VULN] Root password 'password'
+db --> bastion : mysql>
+bastion --> user : Database shell
+deactivate db
+deactivate bastion
+
+user -> bastion : ldapsearch -x -H ldap://10.10.3.30 -b "dc=rangecorp,dc=local"
+activate bastion
+bastion -> ldap : LDAP anonymous bind
+activate ldap
+note over ldap : [VULN] Anonymous bind enabled
+ldap --> bastion : Directory listing
+deactivate ldap
+bastion --> user : User enumeration data
+deactivate bastion
+
+@enduml

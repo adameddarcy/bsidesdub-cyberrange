@@ -1,0 +1,56 @@
+@startuml Sequence_Monitoring_Flow
+!theme plain
+
+title Monitoring & Log Collection Flow
+
+participant "All Containers" as containers
+participant "Docker Daemon" as docker
+participant "Promtail\n10.10.4.x" as promtail
+participant "Loki\n10.10.4.x" as loki
+participant "Grafana\n:3000" as grafana
+actor "Workshop\nParticipant" as user
+
+== Continuous Log Collection ==
+
+containers -> docker : stdout/stderr
+activate docker
+docker -> docker : Write to\n/var/lib/docker/containers/
+deactivate docker
+
+promtail -> docker : Read container logs\n(bind mount)
+activate promtail
+promtail -> promtail : Parse & label logs\n(job: containerlogs)
+promtail -> loki : Push log streams\nHTTP POST /loki/api/v1/push
+activate loki
+loki -> loki : Index & store logs
+deactivate loki
+deactivate promtail
+
+== Participant Observes Attack Artefacts ==
+
+user -> grafana : Browse to http://vps-ip:3000
+activate grafana
+note over grafana : [INFO] Anonymous access enabled\nGF_AUTH_ANONYMOUS_ENABLED=true
+grafana -> loki : LogQL query\n{container_name="range-juiceshop"}
+activate loki
+loki --> grafana : Log results
+deactivate loki
+grafana --> user : Dashboard with attack logs
+deactivate grafana
+
+note over user,grafana : Participants can observe:\n- SQL injection attempts\n- Failed login brute-force\n- SSRF requests\n- Agent tool calls
+
+== Example: SQLi Detection ==
+
+user -> grafana : Query: {container_name="range-db"}\n|= "SELECT" |= "UNION"
+activate grafana
+grafana -> loki : LogQL query
+activate loki
+loki --> grafana : MySQL general log entries\nshowing SQLi payloads
+deactivate loki
+grafana --> user : Evidence of SQL injection
+deactivate grafana
+
+note over loki : [VULN] MySQL general log enabled\nCredentials visible in query log
+
+@enduml

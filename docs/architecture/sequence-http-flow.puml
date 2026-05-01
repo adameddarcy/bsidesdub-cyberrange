@@ -1,0 +1,44 @@
+@startuml Sequence_HTTP_Flow
+!theme plain
+
+title Normal HTTP Request Flow - Juice Shop Access
+
+actor "Workshop\nParticipant" as user
+participant "Nginx Proxy\n10.10.1.10" as proxy
+participant "Juice Shop\n10.10.1.20" as juice
+database "MySQL\n10.10.2.40" as db
+
+user -> proxy : HTTP GET http://vps-ip/
+activate proxy
+proxy -> juice : proxy_pass http://juiceshop:3000/
+activate juice
+juice -> db : SELECT products...
+activate db
+db --> juice : Product data
+deactivate db
+juice --> proxy : HTML response
+deactivate juice
+proxy --> user : HTTP 200 + HTML
+deactivate proxy
+
+note over user,proxy : [VULN] Server header exposes nginx version
+note over proxy,juice : [VULN] No rate limiting on /rest/user/login
+
+== User Login Flow ==
+
+user -> proxy : POST /rest/user/login\n{email, password}
+activate proxy
+proxy -> juice : Forward login request
+activate juice
+juice -> db : SELECT * FROM Users WHERE email=?
+activate db
+db --> juice : User record (if exists)
+deactivate db
+juice --> proxy : JWT token (signed with 'secret')
+deactivate juice
+proxy --> user : HTTP 200 + JWT
+deactivate proxy
+
+note over juice : [VULN] JWT secret is hardcoded 'secret'\nToken forgery possible
+
+@enduml
